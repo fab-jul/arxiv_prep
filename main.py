@@ -6,6 +6,8 @@ from PIL import Image
 
 
 # TODO: strip inline comments
+# TODO: traverse \usepackage to check local packages
+# TODO: also strip comments from included files
 
 
 _RE_INCLUDE_GRAPHICS = re.compile(r'\\includegraphics(\[.*\])?{(.*?)}')
@@ -33,28 +35,6 @@ def copy_latex(flags):
     for p in c.copied_files:
         if p.endswith('.tex'):
             strip_comments(p)
-
-
-
-
-def strip_comments(p):
-    with open(p, 'r', encoding='utf-8') as fin:
-        lines = fin.readlines()
-
-    p_stripped = p + 'stripped'
-    with open(p_stripped, 'w') as fout:
-        for i, l in enumerate(lines):
-            m = re.search(r'((...)?%(.*$))', l)
-            if l.startswith('%'):
-                continue
-            if (l.rstrip().endswith('%')) or (r'\%' in l):
-                fout.write(l)
-                continue
-            if '%' in l:
-                print('Remaining Comment on L{}: {}'.format(i, m.group(1)))
-            fout.write(l)
-
-    os.rename(p_stripped, p)
 
 
 class Copier(object):
@@ -134,6 +114,34 @@ class Copier(object):
         raise ValueError('Did not find file starting with {} and ext in {}'.format(p, _EXTS))
 
 
+def strip_comments(p):
+    """ Remove unneeded comments from LaTeX file `p`. """
+    with open(p, 'r', encoding='utf-8') as fin:
+        lines = fin.readlines()
+
+    p_stripped = p + 'stripped'
+    with open(p_stripped, 'w') as fout:
+        for i, l in enumerate(lines):
+            m = re.search(r'((...)?%(.*$))', l)
+            if l.startswith('%'):  # comment line, remove
+                continue
+            # if a line ends with % only, the % is used for layout -> keep
+            # \% is percentage -> keep
+            if (l.rstrip().endswith('%')) or (r'\%' in l):
+                fout.write(l)
+                continue
+            # lines containing % in the middle are ignored for now
+            # TODO
+            if '%' in l:
+                print('Remaining Comment on L{}: {}'.format(i, m.group(1)))
+            fout.write(l)
+
+    os.rename(p_stripped, p)
+
+
+# Helpers ----------------------------------------------------------------------
+
+
 def assert_exc(cond, msg=None, exc=ValueError):
     if not cond:
         raise exc(msg)
@@ -146,6 +154,7 @@ def _rmtree_semi_safe(out_dir, max_size_mb=20):
 
 
 def _get_size(p, max_size):
+    """ Get size of directory `p`, stop if `max_size` is reached. """
     total_size = 0
     for dirpath, dirnames, filenames in os.walk(p):
         for f in filenames:
@@ -154,6 +163,9 @@ def _get_size(p, max_size):
             if total_size > max_size:
                 return None
     return total_size
+
+
+# Main -------------------------------------------------------------------------
 
 
 def main():
