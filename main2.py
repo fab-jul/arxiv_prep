@@ -117,7 +117,10 @@ def _compile_and_keep_bbl(main_file_out):
     except StopIteration:
         print('*** Error! .bbl file not found. Did you compile?')
         sys.exit(1)
-    unneeded_files = (files_after_compile - files_before_compile) - {bbl_file}
+    pdf_out = next(p for p in files_after_compile if p.endswith('.pdf'))
+    os.rename(os.path.join(out_dir, pdf_out), os.path.abspath(os.path.join(out_dir, '..', pdf_out)))
+    print('Keeping', pdf_out, '-- please check!')
+    unneeded_files = (files_after_compile - files_before_compile) - {bbl_file, pdf_out}
     print('Unneeded', unneeded_files)
     for unneeded_file in unneeded_files:
         p = os.path.join(out_dir, unneeded_file)
@@ -565,7 +568,7 @@ def _insert_in_file(p, text):
 def main(args=sys.argv[1:]):
     p = argparse.ArgumentParser()
     p.add_argument('main_file')
-    p.add_argument('--out_dir', '-o', help='Where to store files.')
+    p.add_argument('--out_dir', '-o', help='Where to store files. By default, create a directory above input.')
     p.add_argument('--encodings', default=['utf-8'], nargs='+', help='Encodings to try when opening .tex files')
     p.add_argument('--force', '-f', action='store_true', help='If given, delete and re-create OUT_DIR. '
                                                               'WARNING: Calls rm -rf OUT_DIR.')
