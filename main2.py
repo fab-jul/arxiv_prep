@@ -1,14 +1,15 @@
 """
 
-go through file line by line
+How this works:
 
-- if it's a (re)newcommand: save, move on
-- resolve all (re)newcommands
-- get a list of all images that are referenced
-- get a list of all .tex or .sty files that are referenced -> parse these
-- check for special stuff: bibtex/bibtexstyle
+- Go through file line by line
+    - if it's a (re)newcommand: save, move on
+    - resolve all (re)newcommands
+    - get a list of all images that are referenced
+    - get a list of all .tex or .sty files that are referenced -> parse these
+    - check for special stuff: bibtex/bibtexstyle
 
-Note: includes are always relative to root!
+Note: includes are assumed to be relative to root!
 
 """
 import argparse
@@ -23,13 +24,10 @@ import subprocess
 
 from fjcommon.assertions import assert_exc
 
-# TODO: renewcommand???
-
-# TODO: working directory vs root directory!!! oh no
-
+# TODO: assumes latexmk exists!
+# TODO: renewcommand
 # TODO: detect loops in usepackage
-
-# TODO: How is conversion handled?
+# TODO: JPG Conversion is not implemented
 # - return (path_in_tex, path_on_disk)  (make sure only one path matching latex on disk)
 # - have IMG_EXTS = {...}, STATIC_EXTS = IMG_EXTS | {.pdf}
 # - check if path_on_disk in img_exts? -> if -jpg, convert to jpg!
@@ -59,12 +57,15 @@ StaticFile = namedtuple('StaticFile', ['tex_path', 'real_path'])  # real_path is
 TexFile = namedtuple('TexFile', ['real_rel_path', 'needs_parse'])  # real_path is also relative
 
 
-# We call images or PDFs "static", as they do not need to be parsed
+_END_DOCUMENT_MARKER = '\\end{document}'
+
+
+# We call images or PDFs "static", as they do not need to be parsed.
 _EXTS_IMG_CONVERTABLE = {'.jpg'}  # TODO, should be an arg
 # _EXTS_IMG = _EXTS_IMG_CONVERTABLE | {'.jpg', '.png', '.jpgs'}
 # _EXTS_STATIC = _EXTS_IMG | {'.pdf'}
 
-# TODO: extend with other ways to include images or PDFs
+# TODO: extend with other ways to include images or PDFs.
 _STATIC_INCLUDES = [
     IncludeCommand(r'\\includegraphics(\[.*?\])?{(.*?)}', 2),
     IncludeCommand(r'\\overpic(\[.*?\])?{(.*?)}', 2)
@@ -87,12 +88,57 @@ class ParseException(Exception):
 
 
 def copy_latex(flags):
+    """Main function."""
     c = Copier(flags.encodings, flags.main_file, flags.out_dir)
     main_file_out = c.copy(flags.store_git_hash, flags.rename)
     sizes = c.copied_file_sizes()
     print('Biggest files:')
     print('\n'.join('{}kB: {}'.format(s, p) for s, p in sorted(sizes, reverse=True)[:10]))
     print('Total: {}kB'.format(sum(s for s, _ in sizes)))
+
+    _compile_and_keep_bbl(main_file_out)
+    # TODO(release): must compile first and get .bbl
+    tar_file_name = os.path.splitext(os.path.basename(main_file_out))[0] + '.tar'
+    subprocess.call(f'tar -cvf ../{tar_file_name} *', shell=True, cwd=flags.out_dir)
+    tar_out_dir = os.path.abspath(os.path.join(flags.out_dir, '..'))
+    print(f'DONE! Upload {tar_file_name} (stored in {tar_out_dir}).')
+
+
+def _compile_and_keep_bbl(main_file_out):
+    print('*** Compiling', main_file_out)
+    out_dir = os.path.dirname(main_file_out)
+    files_before_compile = set(os.listdir(out_dir))
+    assert not any(p.endswith('.bbl') for p in files_before_compile)
+    _compile(main_file_out)
+    files_after_compile = set(os.listdir(out_dir))
+    print(f'*** Searching for .bll file in {files_after_compile}...')
+    try:
+        bbl_file = next(p for p in files_after_compile if p.endswith('.bbl'))
+    except StopIteration:
+        print('*** Error! .bbl file not found. Did you compile?')
+        sys.exit(1)
+    unneeded_files = (files_after_compile - files_before_compile) - {bbl_file}
+    print('Unneeded', unneeded_files)
+    for unneeded_file in unneeded_files:
+        p = os.path.join(out_dir, unneeded_file)
+        os.remove(p)
+
+
+def _compile(main_file_out):
+    cwd, filename = os.path.split(main_file_out)
+    assert filename.endswith('.tex'), filename
+    cmd = ['latexmk', filename, '--view=pdf']
+    try:
+        subprocess.call(cmd, cwd=cwd, stdout=subprocess.DEVNULL)
+    except FileNotFoundError:
+        cmd = ' '.join(cmd)
+        print('*** Error when running `{}` in {}'.format(cmd, cwd))
+        print('*** Please run a compile step in another shell and return here.')
+        out = input('*** Type "yes" if ready >> ')
+        if out != 'yes':
+            print('*** Abort')
+            sys.exit(1)
+
 
 def _replace_all(s, rep):
     assert all(isinstance(v, str) for v in rep.values())
@@ -152,13 +198,14 @@ class Copier(object):
     def __init__(self, encodings, tex_root_file, out_dir):
         self.encodings = encodings
         self.tex_root_dir = os.path.dirname(os.path.abspath(tex_root_file))
-        # relative to tex_root_dir
+        # Relative to tex_root_dir.
         self.tex_root_p = os.path.basename(tex_root_file)
+        assert os.path.isfile(os.path.join(self.tex_root_dir, self.tex_root_p))
+
         self.out_dir = os.path.abspath(out_dir)
 
         self._convert_jpg_exts = []  # [] if not set!
-
-        self._copied_file_ps = []
+        self._copied_file_ps = set()
 
         # _regexes: dictionary {\command -> compiled regexes matching command invocations}
         # _command_definitions: dictionary {\command -> (definition, num_args)
@@ -173,6 +220,7 @@ class Copier(object):
         self._command_definitions = {}
 
     def copy(self, store_git_hash=False, rename=None):
+        """Copy main file recursively."""
         self._copy(self.tex_root_p)  # TODO: maybe copy and strip
         self._parse_file(self.tex_root_p)
         main_file_out = os.path.join(self.out_dir, self.tex_root_p)
@@ -185,10 +233,9 @@ class Copier(object):
             main_file_out_new = os.path.join(self.out_dir, rename)
             os.rename(main_file_out, main_file_out_new)
             self._copied_file_ps.remove(main_file_out)
-            self._copied_file_ps.append(main_file_out_new)
+            self._copied_file_ps.add(main_file_out_new)
             main_file_out = main_file_out_new
         return main_file_out
-
 
     def _store_git_hash(self, main_file_out):
         git_hash = self._get_git_hash()
@@ -217,7 +264,12 @@ class Copier(object):
         with _open(p, self.encodings) as f:
             f_iter = enumerate(iter(f))
             for i, line in f_iter:
-                line = strip_comments_from_line(line)  # to make sure we do not parse anything commented out.
+                if _END_DOCUMENT_MARKER in line:
+                    print(f'*** Found `{line.strip()}`, stopping parsing!')
+                    break
+                # To make sure we do not parse anything commented out.
+                # We strip the comments again after copying.
+                line = strip_comments_from_line(line)
                 if not is_sty_file:
                     line = self._extract_definition(line, f_iter)
                     line = self._resolve_definitions(line)
@@ -267,34 +319,39 @@ class Copier(object):
         return remaining_line
 
     def _copy(self, relative_p):
+        """Copy file at `relative_p` to output. If .tex file, strip comments."""
         print('Copying', relative_p, '...')
         p = os.path.join(self.tex_root_dir, relative_p)
-        assert os.path.isfile(p)
+        assert os.path.isfile(p), f'Expected file at {p} (make sure this is not a directory).'
 
         outp = os.path.join(self.out_dir, relative_p)
         shutil.copy(p, outp)
-        self._copied_file_ps.append(outp)
+        self._copied_file_ps.add(outp)
 
         if outp.endswith('.tex'):
             strip_comments(outp)
 
     def _copy_static(self, static_file: StaticFile):
-        """
-        compresses also!
+        """copy static file (images, pdfs, etc.)
+
+        Compresses also!
         :param static_file:
         :return:
         """
+        print('*** static', static_file)
         p = os.path.join(self.tex_root_dir, static_file.real_path)
         out_p = os.path.join(self.out_dir, static_file.real_path)
         os.makedirs(os.path.dirname(out_p), exist_ok=True)  # real_path might contain a dir, e.g., img/A.png
         _, real_ext = os.path.splitext(static_file.real_path)
         if real_ext not in self._convert_jpg_exts:
+            print('*** static -> cp', p, out_p)
             shutil.copy(p, out_p)
+            self._copied_file_ps.add(out_p)
             return
         _, tex_ext = os.path.splitext(static_file.tex_path)
         if tex_ext != '' and tex_ext != real_ext:
             # If the LaTeX source contains imgA.png and we save it as imgA.jpg, there will be a compile error.
-            # This is fixed by changing source to imgA only, and let latex figure add the extension..
+            # This is fixed by changing source to imgA only, and let latex figure add the extension.
             # Note that `_real_path_for_static_file` already makes sure that there is only one match for
             # tex_path*, so removing the extension should always be safe at this point.
             tex_path = static_file.tex_path
@@ -303,11 +360,11 @@ class Copier(object):
                     'Please replace {} with {} and try again.'.format(
                             tex_path, tex_path, os.path.splitext(tex_path)[0]))
         new_out_p = os.path.splitext(out_p)[0] + '.jpg'
-        self._save_as_jpg(p, new_out_p)
+        self._save_as_jpg(p, new_out_p)  # TODO: not implemented!
 
     def _resolve_definitions(self, s):
         """
-        :param s:  string to replace in
+        :param s: string to replace in
         :return: s with every used definition replaced
         """
         # replacement function used for re.sub, mapping regex match to string
@@ -348,6 +405,7 @@ class Copier(object):
     def _included_static_files(self, l):
         for m, include_command in Copier._match_all(l, _STATIC_INCLUDES):
             tex_path = m.group(include_command.path_group)
+            print('***', tex_path)
             # this is actually a full fucking path
             real_path = self._real_path_for_static_file(tex_path)
             rel_path = real_path.replace(self.tex_root_dir, '').lstrip(os.path.sep)
@@ -470,7 +528,7 @@ def strip_comments(p):
                 continue
             l_prev = l
             fout.write(l)
-            if '\\end{document}' in l:
+            if _END_DOCUMENT_MARKER in l:
                 print('Reached {}, stopping...'.format(l.strip()))
                 fout.write('\n')
                 break
@@ -513,22 +571,24 @@ def main(args=sys.argv[1:]):
                                                               'WARNING: Calls rm -rf OUT_DIR.')
     p.add_argument('--store_git_hash', '-git', action='store_true',
                    help='If given, add git hash of repo of MAIN_FILE to output file at the top.')
-    p.add_argument('--convert_to_jpg', '-jpg', action='store_true', help='If given, convert .pngs to .jpg')
+    # TODO: not implemented??
+    p.add_argument('--convert_to_jpg', '-jpg', action='store_true',
+                   help='If given, convert .pngs to .jpg. NOT YET IMPLEMENTED!')
 
     p.add_argument('--rename', '-mv',
                    help='If given, rename OUT_DIR/MAIN_FILE to OUT_DIR/NEW_NAME', metavar='NEW_NAME')
     flags = p.parse_args(args)
 
     if flags.out_dir is None:
-        flags.out_dir = os.path.dirname(flags.main_file) + '_arXiv'
+        flags.out_dir = os.path.dirname(os.path.abspath(flags.main_file)) + '_arXivout'
 
     if os.path.isdir(flags.out_dir):
-        print(f'*** OUT_DIR={flags.out_dir} exists!')
+        print(f'*** OUT_DIR={flags.out_dir} exists! Delete or pass -f.')
         if not flags.force:
             sys.exit(1)
         print('*** Removing...')
         shutil.rmtree(flags.out_dir)
-        os.makedirs(flags.out_dir, exist_ok=False)
+    os.makedirs(flags.out_dir, exist_ok=False)
 
     copy_latex(flags)
 
