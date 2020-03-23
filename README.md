@@ -17,3 +17,7 @@ python main2.py /path/to/main.tex --rename my_paper_final
 ```
 
 
+## main3: Upcoming
+
+- Try to parse `.log` or `.fdb_latexmk`, which seems to know which files were included.
+- Have a flag for environments / commands to strip
