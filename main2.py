@@ -96,12 +96,15 @@ def copy_latex(flags):
     print('\n'.join('{}kB: {}'.format(s, p) for s, p in sorted(sizes, reverse=True)[:10]))
     print('Total: {}kB'.format(sum(s for s, _ in sizes)))
 
+    if input('>>> Ready to compile? (We need to get that .bbl file!): [y/n] ') != 'y':
+        sys.exit(0)
+
     _compile_and_keep_bbl(main_file_out)
     # TODO(release): must compile first and get .bbl
     tar_file_name = os.path.splitext(os.path.basename(main_file_out))[0] + '.tar'
     subprocess.call(f'tar -cvf ../{tar_file_name} *', shell=True, cwd=flags.out_dir)
     tar_out_dir = os.path.abspath(os.path.join(flags.out_dir, '..'))
-    print(f'DONE! Upload {tar_file_name} (stored in {tar_out_dir}).')
+    print(f'DONE! Upload {tar_file_name}, and maybe check the pdf (both stored in {tar_out_dir}).')
 
 
 def _compile_and_keep_bbl(main_file_out):
@@ -137,10 +140,8 @@ def _compile(main_file_out):
         cmd = ' '.join(cmd)
         print('*** Error when running `{}` in {}'.format(cmd, cwd))
         print('*** Please run a compile step in another shell and return here.')
-        out = input('*** Type "yes" if ready >> ')
-        if out != 'yes':
-            print('*** Abort')
-            sys.exit(1)
+        if input('>>> Did you compile: [y/n] ') != 'y':
+            sys.exit(0)
 
 
 def _replace_all(s, rep):

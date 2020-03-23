@@ -446,6 +446,9 @@ def _modify_file(p, out_encoding='utf-8'):
 
 
 def main(args=sys.argv[1:]):
+
+    raise DeprecationWarning('Please use main2.py. See README')
+
     p = argparse.ArgumentParser()
     p.add_argument('main_file', help=r'Main Latex file, will copy and also all files included with \input, '
                                      r'\includegraphics, and \overpic. All files in \input are recursively parsed and '

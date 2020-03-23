@@ -1,6 +1,6 @@
 # arxiv_prep
 
-## main2
+## main2: Features
 
 - [x] Recursively parse commands
 - [x] Find used image files, discard res
